@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Request Signature</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;background:#f1f3f4;color:#222;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+  .card{background:#fff;width:100%;max-width:440px;border-radius:16px;padding:24px;box-shadow:0 2px 10px rgba(0,0,0,.1)}
+  h1{font-size:20px;margin-bottom:16px}
+  .btn{display:block;width:100%;border:0;border-radius:10px;padding:15px;font-size:17px;font-weight:600;background:#1a73e8;color:#fff;text-align:center;margin-top:10px;cursor:pointer;text-decoration:none}
+  .sec{background:#e8eaed;color:#222}
+  .wa{background:#25d366}
+  #file-name{margin-top:12px;font-size:14px;color:#555;word-break:break-all}
+  #link{width:100%;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:14px;margin-top:6px;background:#fafafa}
+  #err{color:#d93025;font-size:14px;margin-top:12px}
+  #done{display:none}
+  .lbl{font-size:14px;color:#555;margin-top:4px}
+</style>
+</head>
+<body>
+<div class="card">
+  <div id="start">
+    <h1>Request a signature</h1>
+    <label class="btn">Attach PDF<input id="file" type="file" accept="application/pdf" hidden></label>
+    <div id="file-name"></div>
+    <div id="err"></div>
+  </div>
+
+  <div id="done">
+    <h1>Ready to send</h1>
+    <div class="lbl">Signing link for <b id="docName"></b></div>
+    <input id="link" readonly>
+    <button class="btn wa" id="btnWa">Send via WhatsApp</button>
+    <button class="btn sec" id="btnCopy">Copy link</button>
+    <button class="btn sec" id="btnNew">Attach another PDF</button>
+  </div>
+</div>
+
+<script>
+/* ===== CONFIG: paste your Apps Script /exec URL ===== */
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyw8-aR-cSWfraqwd8fUZf3PXOxU45xXdkENxRtWSSsR5oirBOC4h_EZ3-MT0dLffZn/exec';
+/* Signer page lives next to this file */
+const SIGN_PAGE = new URL('sign.html', location.href).href;
+
+const $ = id => document.getElementById(id);
+let link = '';
+
+$('file').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  $('err').textContent = '';
+  if (f.type !== 'application/pdf' && !/\.pdf$/i.test(f.name)) { $('err').textContent = 'Please choose a PDF file.'; return; }
+  if (f.size > 20 * 1024 * 1024) { $('err').textContent = 'File too large (max 20 MB).'; return; }
+  $('file-name').textContent = 'Uploading ' + f.name + '…';
+  try {
+    const data = await toBase64(f);
+    const r = await fetch(SCRIPT_URL, {method:'POST', body: JSON.stringify({name: f.name, data})});
+    const res = await r.json();
+    if (res.error) throw new Error(res.error);
+    link = SIGN_PAGE + '?id=' + encodeURIComponent(res.id);
+    $('docName').textContent = res.name;
+    $('link').value = link;
+    $('start').style.display = 'none';
+    $('done').style.display = 'block';
+  } catch (err) {
+    $('file-name').textContent = '';
+    $('err').textContent = 'Upload failed: ' + (err.message || 'check connection');
+  }
+  e.target.value = '';
+};
+
+function toBase64(file){
+  return new Promise((ok, no) => {
+    const r = new FileReader();
+    r.onload = () => ok(r.result.split(',')[1]);
+    r.onerror = no;
+    r.readAsDataURL(file);
+  });
+}
+
+$('btnWa').onclick = () => {
+  const msg = 'Please review and sign: ' + $('docName').textContent + '\n' + link +
+    '\n\nHow to sign:' +
+    '\n1. Open the link' +
+    '\n2. Tap Sign and draw your signature, then OK' +
+    '\n3. Tap the page where it goes (drag to move)' +
+    '\n4. Tap Done, then WhatsApp to send it back';
+  location.href = 'https://wa.me/?text=' + encodeURIComponent(msg);
+};
+$('btnCopy').onclick = async () => {
+  try { await navigator.clipboard.writeText(link); } catch(e) { $('link').select(); document.execCommand('copy'); }
+  $('btnCopy').textContent = 'Copied';
+  setTimeout(() => $('btnCopy').textContent = 'Copy link', 1500);
+};
+$('btnNew').onclick = () => {
+  $('done').style.display = 'none'; $('start').style.display = 'block'; $('file-name').textContent = '';
+};
+</script>
+</body>
+</html>

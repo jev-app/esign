@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Sign Document</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{background:#525659;font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;color:#222}
+  #pages{padding:calc(84px + env(safe-area-inset-top)) 8px 40px;display:flex;flex-direction:column;align-items:center;gap:10px}
+  .page{position:relative;width:100%;max-width:900px;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+  .page canvas{display:block;width:100%;height:auto}
+  .sig{position:absolute;border:2px dashed #1a73e8;touch-action:none;cursor:move}
+  .sig img{width:100%;height:100%;display:block;pointer-events:none}
+  .sig .rs{position:absolute;right:-12px;bottom:-12px;width:24px;height:24px;border-radius:50%;background:#1a73e8;border:2px solid #fff}
+  .sig .x{position:absolute;right:-12px;top:-12px;width:24px;height:24px;border-radius:50%;background:#d93025;color:#fff;border:2px solid #fff;font:bold 14px/20px sans-serif;text-align:center}
+  .bar{position:fixed;left:0;right:0;top:0;padding:12px;padding-top:max(12px,env(safe-area-inset-top));background:#fff;display:flex;gap:10px;box-shadow:0 2px 8px rgba(0,0,0,.25);z-index:5}
+  button{flex:1;border:0;border-radius:10px;padding:15px 10px;font-size:17px;font-weight:600;background:#1a73e8;color:#fff}
+  button.sec{background:#e8eaed;color:#222}
+  button.wa{background:#25d366}
+  #barOut{gap:6px}
+  #barOut button{font-size:15px;padding:15px 4px}
+  button.redo{color:#d93025}
+  button:disabled{opacity:.4}
+  .hint{position:fixed;top:calc(90px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);background:rgba(0,0,0,.8);color:#fff;padding:8px 14px;border-radius:20px;font-size:14px;z-index:6;display:none;white-space:nowrap}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:flex-start;justify-content:center;z-index:10}
+  .sheet{background:#fff;width:100%;max-width:600px;border-radius:0 0 16px 16px;padding:16px;padding-top:max(16px,env(safe-area-inset-top))}
+  .sheet h3{font-size:17px;margin-bottom:10px}
+  #pad{width:100%;height:200px;border:1px solid #ccc;border-radius:10px;background:#fafafa;touch-action:none;display:block}
+  .row{display:flex;gap:10px;margin-bottom:12px}
+    #loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;padding:20px;text-align:center}
+</style>
+</head>
+<body>
+
+<div id="loading">Loading document…</div>
+<div id="pages"></div>
+<div class="hint" id="hint">Tap on the page where you want to sign</div>
+
+<!-- Step 1 bar -->
+<div class="bar" id="barSign" style="display:none">
+  <button id="btnSign">Sign</button>
+</div>
+<!-- Step 2 bar -->
+<div class="bar" id="barPlace" style="display:none">
+  <button class="sec" id="btnRedo">Re-sign</button>
+  <button id="btnDone">Done</button>
+</div>
+<!-- Step 3 bar -->
+<div class="bar" id="barOut" style="display:none">
+  <button class="sec redo" id="btnUndo">Redo</button>
+  <button class="sec" id="btnSave">Save</button>
+  <button class="sec" id="btnShare">Share</button>
+  <button class="wa" id="btnWa">WhatsApp</button>
+</div>
+
+<!-- Signature pad -->
+<div class="modal" id="padModal">
+  <div class="sheet">
+    <div class="row">
+      <button class="sec" id="padCancel">Cancel</button>
+      <button class="sec" id="padClear">Clear</button>
+      <button id="padOk">OK</button>
+    </div>
+    <h3>Draw your signature below</h3>
+    <canvas id="pad"></canvas>
+  </div>
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+const $ = id => document.getElementById(id);
+let pdfBytes = null, fileName = 'document.pdf', sigDataUrl = null, placements = [], signedFile = null;
+
+const show = id => ['barSign','barPlace','barOut'].forEach(b => $(b).style.display = b === id ? 'flex' : 'none');
+
+/* ===== CONFIG: paste your Apps Script /exec URL ===== */
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyw8-aR-cSWfraqwd8fUZf3PXOxU45xXdkENxRtWSSsR5oirBOC4h_EZ3-MT0dLffZn/exec';
+
+/* ---------- Load PDF from link (?id=...) — signer cannot attach ---------- */
+(async function init(){
+  const id = new URLSearchParams(location.search).get('id');
+  if (!id) return fail('No document. Please use the link you received.');
+  try {
+    const r = await fetch(SCRIPT_URL + '?id=' + encodeURIComponent(id));
+    const res = await r.json();
+    if (res.error) return fail(res.error);
+    fileName = res.name || fileName;
+    const bin = atob(res.data), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    render(bytes);
+  } catch(e) { fail('Could not load the document. Check your connection and reopen the link.'); }
+})();
+function fail(msg){ $('loading').textContent = msg; }
+
+async function render(bytes){
+  pdfBytes = bytes.slice();
+  $('loading').style.display = 'flex';
+  const pdf = await pdfjsLib.getDocument({data: bytes}).promise;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const cssW = Math.min(document.body.clientWidth - 16, 900);
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const p = await pdf.getPage(i);
+    const v1 = p.getViewport({scale:1});
+    const vp = p.getViewport({scale: cssW / v1.width * dpr});
+    const wrap = document.createElement('div'); wrap.className = 'page'; wrap.dataset.index = i - 1;
+    const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+    wrap.appendChild(c); $('pages').appendChild(wrap);
+    await p.render({canvasContext: c.getContext('2d'), viewport: vp}).promise;
+    wrap.addEventListener('click', placeSig);
+  }
+  $('loading').style.display = 'none';
+  show('barSign');
+}
+
+/* ---------- Signature pad ---------- */
+const pad = $('pad'), pctx = pad.getContext('2d');
+let drawing = false, drew = false;
+function openPad(){
+  $('padModal').style.display = 'flex';
+  const r = pad.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  pad.width = r.width * d; pad.height = r.height * d;
+  pctx.setTransform(d,0,0,d,0,0);
+  pctx.lineWidth = 2.5; pctx.lineCap = 'round'; pctx.lineJoin = 'round'; pctx.strokeStyle = '#0b2a8a';
+  drew = false;
+}
+const pt = e => { const r = pad.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+pad.onpointerdown = e => { drawing = true; drew = true; pad.setPointerCapture(e.pointerId); pctx.beginPath(); pctx.moveTo(...pt(e)); };
+pad.onpointermove = e => { if (!drawing) return; pctx.lineTo(...pt(e)); pctx.stroke(); };
+pad.onpointerup = pad.onpointercancel = () => drawing = false;
+$('padClear').onclick = () => { pctx.clearRect(0,0,pad.width,pad.height); drew = false; };
+$('padCancel').onclick = () => $('padModal').style.display = 'none';
+$('padOk').onclick = () => {
+  if (!drew) return;
+  sigDataUrl = trim(pad);
+  $('padModal').style.display = 'none';
+  $('hint').style.display = 'block';
+};
+$('btnSign').onclick = openPad;
+$('btnRedo').onclick = () => { placements.forEach(p => p.el.remove()); placements = []; openPad(); };
+
+function trim(c){ // crop empty space around the signature
+  const d = c.getContext('2d').getImageData(0,0,c.width,c.height).data;
+  let x0=c.width,y0=c.height,x1=0,y1=0;
+  for (let y=0;y<c.height;y++) for (let x=0;x<c.width;x++) if (d[(y*c.width+x)*4+3]) {
+    if(x<x0)x0=x; if(y<y0)y0=y; if(x>x1)x1=x; if(y>y1)y1=y; }
+  const pad = 6, w = x1-x0+pad*2, h = y1-y0+pad*2;
+  const o = document.createElement('canvas'); o.width = w; o.height = h;
+  o.getContext('2d').drawImage(c, x0-pad, y0-pad, w, h, 0, 0, w, h);
+  return o.toDataURL('image/png');
+}
+
+/* ---------- Place / move / resize ---------- */
+function placeSig(e){
+  if (!sigDataUrl || e.target.closest('.sig') || $('barOut').style.display === 'flex') return;
+  const page = e.currentTarget, r = page.getBoundingClientRect();
+  const img = new Image(); img.src = sigDataUrl;
+  img.onload = () => {
+    const w = r.width * 0.32, h = w * img.naturalHeight / img.naturalWidth;
+    const el = document.createElement('div'); el.className = 'sig';
+    el.innerHTML = `<img src="${sigDataUrl}"><div class="x">×</div><div class="rs"></div>`;
+    Object.assign(el.style, {left:(e.clientX-r.left-w/2)+'px', top:(e.clientY-r.top-h/2)+'px', width:w+'px', height:h+'px'});
+    page.appendChild(el);
+    const p = {el, page}; placements.push(p);
+    drag(el, p);
+    $('hint').style.display = 'none';
+    show('barPlace');
+  };
+}
+function drag(el, p){
+  const ratio = () => el.offsetHeight / el.offsetWidth;
+  el.querySelector('.x').onpointerdown = ev => { ev.stopPropagation(); el.remove(); placements = placements.filter(q => q !== p); if (!placements.length) show('barSign'); };
+  el.onpointerdown = ev => {
+    ev.preventDefault(); ev.stopPropagation();
+    const resize = ev.target.classList.contains('rs');
+    const sx = ev.clientX, sy = ev.clientY, l = el.offsetLeft, t = el.offsetTop, w = el.offsetWidth, rt = ratio();
+    el.setPointerCapture(ev.pointerId);
+    el.onpointermove = m => {
+      const dx = m.clientX - sx, dy = m.clientY - sy;
+      if (resize) { const nw = Math.max(40, w + dx); el.style.width = nw+'px'; el.style.height = nw*rt+'px'; }
+      else { el.style.left = (l+dx)+'px'; el.style.top = (t+dy)+'px'; }
+    };
+    el.onpointerup = () => el.onpointermove = null;
+  };
+}
+
+/* ---------- Build signed PDF ---------- */
+$('btnDone').onclick = async () => {
+  $('btnDone').disabled = true; $('btnDone').textContent = 'Saving…';
+  const doc = await PDFLib.PDFDocument.load(pdfBytes);
+  const png = await doc.embedPng(sigDataUrl);
+  const pages = doc.getPages();
+  for (const {el, page} of placements) {
+    const pg = pages[+page.dataset.index];
+    const {width:pw, height:ph} = pg.getSize();
+    const k = pw / page.clientWidth;
+    const w = el.offsetWidth * k, h = el.offsetHeight * k;
+    pg.drawImage(png, {x: el.offsetLeft * k, y: ph - el.offsetTop * k - h, width: w, height: h});
+    el.style.border = 'none'; el.querySelectorAll('.x,.rs').forEach(n => n.remove()); el.style.pointerEvents = 'none';
+  }
+  const out = await doc.save();
+  const name = fileName.replace(/\.pdf$/i,'') + '_signed.pdf';
+  signedFile = new File([out], name, {type:'application/pdf'});
+  show('barOut');
+};
+
+/* ---------- Redo: clear signature and start again ---------- */
+$('btnUndo').onclick = () => {
+  placements.forEach(p => p.el.remove()); placements = [];
+  signedFile = null;
+  $('btnDone').disabled = false; $('btnDone').textContent = 'Done';
+  show('barSign');
+  openPad();
+};
+
+/* ---------- Save / Share / WhatsApp ---------- */
+function save(){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(signedFile); a.download = signedFile.name;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+async function share(){
+  if (navigator.canShare && navigator.canShare({files:[signedFile]})) {
+    try { await navigator.share({files:[signedFile], title: signedFile.name}); } catch(e) {}
+    return true;
+  }
+  return false;
+}
+$('btnSave').onclick = save;
+$('btnShare').onclick = async () => { if (!(await share())) save(); };
+$('btnWa').onclick = async () => {
+  // Phones: opens the share sheet with the PDF attached → pick WhatsApp.
+  if (await share()) return;
+  // Desktop fallback: download the PDF, then open WhatsApp to attach it.
+  save();
+  location.href = 'https://wa.me/?text=' + encodeURIComponent('Signed document: ' + signedFile.name + ' (attached)');
+};
+</script>
+</body>
+</html>
